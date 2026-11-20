@@ -1,0 +1,265 @@
+/*
+  ==========================================
+       SPARK INDUSTRIAL 360
+       INTERNET REMOTE OTA SYSTEM
+       ESP32 30 PIN
+  ==========================================
+*/
+
+#include <WiFi.h>
+#include <WiFiManager.h>
+#include <WebServer.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+
+// -------- FIRMWARE VERSION --------
+
+#define CURRENT_VERSION "1.1"
+
+// -------- GITHUB SETTINGS --------
+
+const char* VERSION_URL =
+"https://raw.githubusercontent.com/neo9586/SPARK-INDUSTRIAL-360-OTA/refs/heads/main/version.txt";
+
+const char* FIRMWARE_URL =
+"https://raw.githubusercontent.com/neo9586/SPARK-INDUSTRIAL-360-OTA/refs/heads/main/firmware.bin";
+
+// -------- WIFI SETTINGS --------
+
+#define AP_NAME "SPARK_OTA_SETUP"
+#define AP_PASSWORD "SPARK360"
+
+// -------- OBJECTS --------
+
+WiFiManager wifiManager;
+WebServer server(80);
+
+unsigned long lastCheck = 0;
+
+const unsigned long CHECK_INTERVAL = 60000;
+
+// -------- WEB PAGE --------
+
+void handleRoot() {
+
+  String page = "";
+
+  page += "<html><head>";
+  page += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  page += "<title>SPARK INDUSTRIAL 360</title>";
+  page += "</head><body>";
+
+  page += "<h2>SPARK INDUSTRIAL 360</h2>";
+
+  page += "<h3>ESP32 WiFi Status</h3>";
+
+  page += "<p>Status: CONNECTED</p>";
+
+  page += "<p>IP Address: ";
+  page += WiFi.localIP().toString();
+  page += "</p>";
+
+  page += "<p>WiFi Name: ";
+  page += WiFi.SSID();
+  page += "</p>";
+
+  page += "<p>Firmware Version: ";
+  page += CURRENT_VERSION;
+  page += "</p>";
+
+  page += "<p>Remote OTA: ACTIVE</p>";
+
+  page += "</body></html>";
+
+  server.send(200, "text/html", page);
+}
+
+// -------- WIFI RESET --------
+
+void handleReset() {
+
+  server.send(200, "text/plain", "WiFi Resetting");
+
+  delay(1000);
+
+  wifiManager.resetSettings();
+
+  ESP.restart();
+}
+
+// -------- CHECK FIRMWARE --------
+
+void checkForUpdate() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WIFI NOT CONNECTED");
+    return;
+  }
+
+  Serial.println();
+  Serial.println("CHECKING GITHUB VERSION");
+
+  WiFiClientSecure client;
+
+  // Trial only: certificate verification disabled.
+  // Production deployment must verify TLS certificates.
+  client.setInsecure();
+
+  HTTPClient https;
+
+  if (!https.begin(client, VERSION_URL)) {
+
+    Serial.println("VERSION SERVER ERROR");
+
+    return;
+  }
+
+  https.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+  int httpCode = https.GET();
+
+  if (httpCode != HTTP_CODE_OK) {
+
+    Serial.print("VERSION HTTP ERROR: ");
+    Serial.println(httpCode);
+
+    https.end();
+
+    return;
+  }
+
+  String remoteVersion = https.getString();
+
+  remoteVersion.trim();
+
+  https.end();
+
+  Serial.print("CURRENT VERSION: ");
+  Serial.println(CURRENT_VERSION);
+
+  Serial.print("REMOTE VERSION: ");
+  Serial.println(remoteVersion);
+
+  float current = atof(CURRENT_VERSION);
+
+  float remote = atof(remoteVersion.c_str());
+
+  if (remote > current) {
+
+    Serial.println("NEW FIRMWARE FOUND");
+
+    Serial.println("STARTING OTA UPDATE");
+
+    WiFiClientSecure otaClient;
+
+    otaClient.setInsecure();
+
+    httpUpdate.rebootOnUpdate(true);
+
+    t_httpUpdate_return result =
+      httpUpdate.update(otaClient, FIRMWARE_URL);
+
+    switch (result) {
+
+      case HTTP_UPDATE_FAILED:
+
+        Serial.print("OTA FAILED: ");
+        Serial.println(httpUpdate.getLastErrorString());
+
+        break;
+
+      case HTTP_UPDATE_NO_UPDATES:
+
+        Serial.println("NO UPDATE");
+
+        break;
+
+      case HTTP_UPDATE_OK:
+
+        Serial.println("UPDATE SUCCESS");
+
+        break;
+    }
+
+  } else {
+
+    Serial.println("FIRMWARE ALREADY UPDATED");
+
+  }
+}
+
+// -------- SETUP --------
+
+void setup() {
+
+  Serial.begin(115200);
+
+  delay(1000);
+
+  Serial.println();
+  Serial.println("==============================");
+
+  Serial.println("SPARK INDUSTRIAL 360");
+
+  Serial.println("REMOTE OTA SYSTEM");
+
+  Serial.println("==============================");
+
+  // WiFi Portal
+
+  wifiManager.setConfigPortalTimeout(180);
+
+  wifiManager.setConnectTimeout(30);
+
+  bool connected = wifiManager.autoConnect(
+    AP_NAME,
+    AP_PASSWORD
+  );
+
+  if (!connected) {
+
+    Serial.println("WIFI CONNECTION FAILED");
+
+    ESP.restart();
+  }
+
+  Serial.println("WIFI CONNECTED");
+
+  Serial.print("IP ADDRESS: ");
+
+  Serial.println(WiFi.localIP());
+
+  // Web Server
+
+  server.on("/", handleRoot);
+
+  server.on("/reset", handleReset);
+
+  server.begin();
+
+  Serial.println("WEB SERVER STARTED");
+
+  // Initial OTA Check
+
+  checkForUpdate();
+
+  lastCheck = millis();
+
+}
+
+// -------- MAIN LOOP --------
+
+void loop() {
+
+  server.handleClient();
+
+  if (millis() - lastCheck >= CHECK_INTERVAL) {
+
+    lastCheck = millis();
+
+    checkForUpdate();
+
+  }
+
+}
